@@ -1,0 +1,136 @@
+#cream-automation:tmp_kas_EU.skippable_audio_ads_US_20171009 
+
+SELECT
+  ab.date AS date,
+  test_group,
+  platform,
+  snap.account_age AS account_age,
+  user.user_age as user_age,
+  sum(ads.starts_in_focus) as starts_in_focus,
+  sum(ads.starts_out_of_focus) as starts_out_of_focus,
+  sum(ads.skips_in_focus) as skips_in_focus,
+  sum(ads.skips_out_of_focus) as skips_out_of_focus,
+  sum(ads.ends_in_focus) as ends_in_focus,
+  sum(ads.ends_out_of_focus) as ends_out_of_focus,
+  sum(total_started_ads) as total_started_ads, 
+  sum(total_skipped_ads) as total_skipped_ads,
+  sum(total_completed_ads) as total_completed_ads,
+  sum(total_clicked_ads) as total_clicked_ads, 
+  EXACT_COUNT_DISTINCT(CASE
+      WHEN total_started_ads > 0 AND total_started_ads IS NOT NULL THEN ads.user_id END) AS users_start_ads,  
+  EXACT_COUNT_DISTINCT(CASE
+      WHEN total_skipped_ads > 0 AND total_skipped_ads IS NOT NULL THEN ads.user_id END) AS users_skip_ads,
+  EXACT_COUNT_DISTINCT(CASE
+      WHEN total_clicked_ads > 0 AND total_clicked_ads IS NOT NULL THEN ads.user_id END) AS users_click_ads   
+      
+ FROM 
+ ( 
+    SELECT user_id,  
+    test_group,  
+    date  
+    FROM [spotify-abba:user_assignments.exposed_users_20171009] 
+    WHERE test_name = 'ad-skippable-audio'  
+    GROUP BY  1, 
+              2,  
+              3
+ ) ab  
+ INNER JOIN  
+ (
+    SELECT DATE(MSEC_TO_TIMESTAMP(((time)*1000))) AS date,  
+    identData.user_id AS user_id, 
+    CASE
+      WHEN LOWER(identData.platform) CONTAINS 'ios' THEN 'iOS'
+      WHEN LOWER(identData.platform) CONTAINS 'android' THEN 'Android'
+      WHEN (LOWER(identData.platform) CONTAINS 'windows'
+        OR LOWER(identData.platform) CONTAINS 'linux'
+        OR LOWER(identData.platform) CONTAINS 'unix'
+        OR LOWER(identData.platform) CONTAINS 'os x') THEN 'Desktop'
+       ELSE identData.platform
+      END AS platform,
+      CASE
+        WHEN message.lineitem_id IN ('376893132',  '381107052',  '4360873160') THEN 'PSA'
+        ELSE 'Not PSA'
+      END AS PSA,
+
+      message.ad_playback_id as ad_playback_id,
+    
+      sum(case when message.event = 'event_started' and message.in_focus = true then 1 else 0 end) as starts_in_focus,
+      sum(case when message.event = 'event_started' and message.in_focus = false then 1 else 0 end) as starts_out_of_focus,
+    
+      sum(case when message.event = 'event_skipped' and message.in_focus = true then 1 else 0 end) as skips_in_focus,
+      sum(case when message.event = 'event_skipped' and message.in_focus = false then 1 else 0 end) as skips_out_of_focus,
+    
+      sum(case when message.event = 'event_ended' and message.in_focus = true then 1 else 0 end) as ends_in_focus,
+      sum(case when message.event = 'event_ended' and message.in_focus = false then 1 else 0 end) as ends_out_of_focus,
+    
+      SUM(CASE
+        WHEN message.event='event_started' THEN 1
+        ELSE 0 END) AS total_started_ads,
+      SUM(CASE
+        WHEN message.event='event_skipped' THEN 1
+        ELSE 0 END) AS total_skipped_ads,
+      SUM(CASE
+        WHEN message.event='event_ended' THEN 1
+        ELSE 0 END) AS total_completed_ads,
+      SUM(CASE
+        WHEN message.event='event_clicked' THEN 1
+        ELSE 0 END) AS total_clicked_ads
+      
+      FROM [gabo-xpn:com_spotify_LogRecord_ap_AdEvent.com_spotify_LogRecord_ap_AdEvent_20171009]
+      WHERE
+        message.event IN ('event_started',
+        'event_ended',
+        'event_skipped',
+        'event_clicked')
+      AND message.slot = 'stream'
+      AND message.ad_format = 'audio'
+      AND JSON_EXTRACT(message.jsondata, '$.ad_type') CONTAINS 'normal'
+      AND identData.country = 'US'
+    GROUP BY
+      1,
+      2,
+      3,
+      4,
+      5
+) AS ads
+    ON ab.user_id = ads.user_id
+    AND ab.date = ads.date
+left outer JOIN  
+(
+  SELECT
+    date,
+    user_id,
+    CASE
+      WHEN DATEDIFF(DATE(TIMESTAMP(date)),DATE(TIMESTAMP(registration_date))) BETWEEN 0 AND 28 THEN '0-28 days'
+      WHEN DATEDIFF(DATE(TIMESTAMP(date)),DATE(TIMESTAMP(registration_date))) BETWEEN 29 AND 181 THEN '0-6 months'
+      WHEN DATEDIFF(DATE(TIMESTAMP(date)),DATE(TIMESTAMP(registration_date))) BETWEEN 182 AND 364 THEN '6-12 months'
+      WHEN DATEDIFF(DATE(TIMESTAMP(date)),DATE(TIMESTAMP(registration_date))) BETWEEN 365 AND 547 THEN '12-18 months'
+      WHEN DATEDIFF(DATE(TIMESTAMP(date)),DATE(TIMESTAMP(registration_date))) > 547 THEN '18 months+'
+    END AS account_age
+  FROM [business-critical-data:user_snapshot.user_snapshot_20171009]
+  WHERE
+    reporting_country = 'US'
+    AND product_type = 'free'
+) snap
+    ON
+    ads.user_id = snap.user_id
+    AND ads.date = snap.date
+LEFT OUTER JOIN 
+(
+  SELECT
+    date,
+    user_id,
+    subs_analytics_scd_onymous_user_YYYYMMDD.current_age_bucket AS user_age
+  FROM
+    [audience-entity:user_noncanonical_daily.user_noncanonical_daily_20171009]
+  WHERE
+    AnonymizedUserdata_BQ.country = 'US') user
+ON
+  ads.date = user.date
+  AND ads.user_id = user.user_id
+GROUP BY
+  1,
+  2,
+  3,
+  4,
+  5
